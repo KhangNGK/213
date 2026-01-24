@@ -1,0 +1,5 @@
+{
+  "name": "Novel Translator",
+  "description": "A high-fidelity AI web novel translation platform featuring multi-LLM support and smart glossary management.",
+  "requestFramePermissions": []
+}
