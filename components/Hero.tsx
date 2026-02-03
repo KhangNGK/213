@@ -1,6 +1,10 @@
 import React from 'react';
 
-const Hero: React.FC = () => {
+interface HeroProps {
+  onNavigate: (view: 'WORKSPACE') => void;
+}
+
+const Hero: React.FC<HeroProps> = ({ onNavigate }) => {
   return (
     <div className="relative z-10 flex flex-col items-center pt-20 pb-16 px-6">
       <div className="max-w-4xl text-center space-y-8">
@@ -21,10 +25,16 @@ const Hero: React.FC = () => {
         </p>
         
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
-          <button className="w-full sm:w-auto px-10 py-4 bg-primary text-white text-lg font-bold rounded-xl glow-button hover:bg-primary/90">
+          <button 
+            onClick={() => onNavigate('WORKSPACE')}
+            className="w-full sm:w-auto px-10 py-4 bg-primary text-white text-lg font-bold rounded-xl glow-button hover:bg-primary/90 transition-transform active:scale-95"
+          >
             Translate Your First Novel
           </button>
-          <button className="w-full sm:w-auto px-10 py-4 glass-card text-white rounded-xl border-white/10 hover:bg-white/5 transition-all font-bold">
+          <button 
+            onClick={() => onNavigate('WORKSPACE')}
+            className="w-full sm:w-auto px-10 py-4 glass-card text-white rounded-xl border-white/10 hover:bg-white/5 transition-all font-bold active:scale-95"
+          >
             View Demo
           </button>
         </div>

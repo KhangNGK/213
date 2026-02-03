@@ -1,3 +1,4 @@
+
 import React from 'react';
 
 // --- ENUMS & BASICS ---
@@ -40,9 +41,10 @@ export interface ProjectStats {
   glossaryTerms: number;
   characters: number;
   completionPercent: number;
+  views?: number;
+  rating?: number;
 }
 
-// "Project" in UI = "Novel"
 export interface Project {
   id: string;
   workspaceId: string;
@@ -51,22 +53,13 @@ export interface Project {
   coverImage?: string;
   genres: string[];
   description?: string;
-  
   sourceLang: string;
   targetLang: string;
-  
-  // Stats (Computed/Derived in UI, cached in DB)
   stats: ProjectStats;
-  
-  // Historical Snapshot for Growth Calculation
   yesterdayStats?: ProjectStats;
-
-  // Sync & State
   syncStatus: SyncStatus;
   lastSyncAt?: string;
   isPublic: boolean;
-  
-  // Feature Flags / Permissions
   settings: {
       allowPublicView: boolean;
       allowComments: boolean;
@@ -74,8 +67,10 @@ export interface Project {
       allowEpubExport: boolean;
       allowContribution: boolean;
       showOnBulletin: boolean;
+      // New QTranslate Settings
+      autoLearnRules?: boolean;
+      smartRuleSync?: boolean;
   };
-
   updatedAt: string;
 }
 
@@ -87,13 +82,10 @@ export interface Chapter {
   titleTranslated: string;
   contentRaw: string;
   contentTranslated: string;
-  
-  // Workflow State
+  summary?: string;
   status: ChapterStatus;
-  isDirty: boolean; // For local-first sync
-  version: number;  // For conflict resolution
-  
-  // Metrics
+  isDirty: boolean;
+  version: number;
   wordCount: number;
   commentsCount?: number;
   lastEditedBy?: string;
@@ -105,6 +97,11 @@ export interface GlossaryTerm {
   projectId: string;
   term: string;
   definition: string;
+  // Machine Learning Metadata
+  usageCount?: number;
+  contextHint?: string;
+  sourceType?: 'manual' | 'ai_extracted' | 'rule_based';
+  updatedAt?: string;
 }
 
 export interface Collaborator extends User {
@@ -113,20 +110,9 @@ export interface Collaborator extends User {
   isActive: boolean;
 }
 
-export interface AuditLog {
-  id: string;
-  action: string;
-  userId: string;
-  targetId?: string;
-  timestamp: string;
-  details?: string;
-}
+export type ViewMode = 'LANDING' | 'WORKSPACE' | 'DASHBOARD' | 'FORUM' | 'READER' | 'EDITOR';
 
-// UI State Helpers
-export type ViewMode = 'LANDING' | 'WORKSPACE' | 'DASHBOARD';
-
-// --- COMPONENT PROPS ---
-
+// Added missing interface for HowItWorks.tsx
 export interface StepCardProps {
   step: string;
   title: string;
@@ -136,10 +122,20 @@ export interface StepCardProps {
   accentColor: string;
 }
 
+// Added missing interface for Features.tsx
 export interface FeatureCardProps {
   icon: string;
   title: string;
   description: string;
   colorClass: string;
   iconColorClass: string;
+}
+
+// Added missing interface for mockServices.ts
+export interface AuditLog {
+  id: string;
+  action: string;
+  userId: string;
+  timestamp: string;
+  metadata?: any;
 }

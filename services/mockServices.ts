@@ -68,19 +68,20 @@ export const syncService = {
             syncStatus: 'synced',
             lastSyncAt: new Date().toISOString(),
             isPublic: true,
+            // START EMPTY: Ensure cloud mock doesn't lie about content we don't have.
             stats: {
-                totalChapters: 40, // Matches the 40 mock chapters we generate in dashboard
-                translatedChapters: 15,
+                totalChapters: 0,
+                translatedChapters: 0,
                 glossaryTerms: 45,
                 characters: 12,
-                completionPercent: 37
+                completionPercent: 0
             },
             yesterdayStats: {
-                totalChapters: 36, // +4 Growth
-                translatedChapters: 10, // +5 Growth
+                totalChapters: 0,
+                translatedChapters: 0,
                 glossaryTerms: 40,
                 characters: 12,
-                completionPercent: 30
+                completionPercent: 0
             },
             settings: {
                 allowPublicView: true,
