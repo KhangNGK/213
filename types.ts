@@ -1,141 +1,146 @@
-
 import React from 'react';
 
-// --- ENUMS & BASICS ---
-export enum ModelType {
-  GEMINI = 'GEMINI',
-  GPT = 'GPT',
-  CLAUDE = 'CLAUDE'
-}
-
-export type Role = 'owner' | 'editor' | 'contributor' | 'viewer' | 'translator';
+export type StoryStatus = 'ongoing' | 'completed';
 export type ChapterStatus = 'raw' | 'draft' | 'translated' | 'approved' | 'published';
-export type SyncStatus = 'local' | 'synced' | 'dirty' | 'conflict' | 'syncing';
-export type PlanType = 'free' | 'pro' | 'studio';
+export type ViewMode = 'LANDING' | 'WORKSPACE' | 'DASHBOARD' | 'EDITOR' | 'FORUM' | 'READER';
+export type SyncStatus = 'synced' | 'syncing' | 'error' | 'local' | 'conflict';
+export type PlanType = 'free' | 'pro' | 'enterprise';
 
-// --- AI TYPES ---
-export type AIActionType = 'TRANSLATE' | 'REWRITE' | 'SUMMARIZE' | 'PROOFREAD';
-export type AITone = 'LITERARY' | 'CASUAL' | 'FORMAL';
-
-// --- SAAS ENTITIES ---
-
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  avatarUrl?: string;
-}
-
-export interface Workspace {
-  id: string;
-  title: string;
-  storage: 'local' | 'cloud';
-  isPublic: boolean;
-  ownerId: string;
-  createdAt: string;
-}
-
-export interface ProjectStats {
-  totalChapters: number;
-  translatedChapters: number;
-  glossaryTerms: number;
-  characters: number;
-  completionPercent: number;
-  views?: number;
-  rating?: number;
-}
-
-export interface Project {
-  id: string;
-  workspaceId: string;
-  title: string;
-  author: string;
-  coverImage?: string;
-  genres: string[];
-  description?: string;
-  sourceLang: string;
-  targetLang: string;
-  stats: ProjectStats;
-  yesterdayStats?: ProjectStats;
-  syncStatus: SyncStatus;
-  lastSyncAt?: string;
-  isPublic: boolean;
-  settings: {
-      allowPublicView: boolean;
-      allowComments: boolean;
-      requireApproval: boolean;
-      allowEpubExport: boolean;
-      allowContribution: boolean;
-      showOnBulletin: boolean;
-      // New QTranslate Settings
-      autoLearnRules?: boolean;
-      smartRuleSync?: boolean;
-  };
-  updatedAt: string;
-}
-
-export interface Chapter {
-  id: string;
-  projectId: string;
-  index: number;
-  titleOriginal: string;
-  titleTranslated: string;
-  contentRaw: string;
-  contentTranslated: string;
-  summary?: string;
-  status: ChapterStatus;
-  isDirty: boolean;
-  version: number;
-  wordCount: number;
-  commentsCount?: number;
-  lastEditedBy?: string;
-  updatedAt: string;
+export enum ModelType {
+    GEMINI = 'gemini',
+    GPT = 'gpt',
+    CLAUDE = 'claude'
 }
 
 export interface GlossaryTerm {
+    id: string;
+    projectId: string;
+    term: string;
+    definition: string;
+}
+
+export interface ProjectStats {
+    totalChapters: number;
+    translatedChapters: number;
+    glossaryTerms: number;
+    characters: number;
+    completionPercent: number;
+    views?: number;
+    rating?: number;
+}
+
+export interface ProjectSettings {
+    allowPublicView: boolean;
+    allowComments: boolean;
+    requireApproval: boolean;
+    allowEpubExport: boolean;
+    allowContribution: boolean;
+    showOnBulletin: boolean;
+    autoNameAnalysis?: boolean;
+    analysisTool?: string;
+    translationTool?: string;
+}
+
+export interface Project {
+    id: string;
+    workspaceId: string;
+    title: string;
+    author: string;
+    description?: string;
+    genres: string[];
+    sourceLang: string;
+    targetLang: string;
+    coverImage?: string;
+    stats: ProjectStats;
+    yesterdayStats?: ProjectStats;
+    syncStatus: SyncStatus;
+    lastSyncAt?: string;
+    isPublic: boolean;
+    settings: ProjectSettings;
+    updatedAt: string;
+}
+
+export interface Chapter {
+    id: string;
+    // Reader Properties
+    story_id?: string;
+    chapter_number?: number;
+    title?: string;
+    content?: string;
+    created_at?: string;
+
+    // Workspace Properties
+    projectId?: string;
+    index?: number;
+    titleOriginal?: string;
+    titleTranslated?: string;
+    contentRaw?: string;
+    contentTranslated?: string;
+    summary?: string;
+    status?: ChapterStatus | string;
+    isDirty?: boolean;
+    version?: number;
+    wordCount?: number;
+    updatedAt?: string;
+}
+
+export interface Story {
   id: string;
-  projectId: string;
-  term: string;
-  definition: string;
-  // Machine Learning Metadata
-  usageCount?: number;
-  contextHint?: string;
-  sourceType?: 'manual' | 'ai_extracted' | 'rule_based';
-  updatedAt?: string;
-}
-
-export interface Collaborator extends User {
-  role: string;
-  color: string;
-  isActive: boolean;
-}
-
-export type ViewMode = 'LANDING' | 'WORKSPACE' | 'DASHBOARD' | 'FORUM' | 'READER' | 'EDITOR';
-
-// Added missing interface for HowItWorks.tsx
-export interface StepCardProps {
-  step: string;
   title: string;
+  slug: string;
+  author: string;
   description: string;
-  icon: React.ReactNode;
-  glowColor: string;
-  accentColor: string;
+  cover_url: string;
+  status: StoryStatus;
+  total_chapters: number;
+  views: number;
+  created_at: string;
+  updated_at: string;
+  genres?: { name: string, slug: string }[];
 }
 
-// Added missing interface for Features.tsx
-export interface FeatureCardProps {
-  icon: string;
-  title: string;
-  description: string;
-  colorClass: string;
-  iconColorClass: string;
+export interface Genre {
+  id: string;
+  name: string;
+  slug: string;
 }
 
-// Added missing interface for mockServices.ts
+export interface SearchParams {
+  q?: string;
+  page?: string;
+}
+
+export interface Collaborator {
+    id: string;
+    email: string;
+    name: string;
+    role: 'owner' | 'editor' | 'translator' | 'viewer';
+    color: string;
+    isActive: boolean;
+    avatarUrl?: string;
+}
+
 export interface AuditLog {
-  id: string;
-  action: string;
-  userId: string;
-  timestamp: string;
-  metadata?: any;
+    id: string;
+    action: string;
+    details: string;
+    timestamp: string;
+    user: string;
+}
+
+export interface StepCardProps {
+    step: string;
+    title: string;
+    description: string;
+    icon: React.ReactNode;
+    glowColor: string;
+    accentColor: string;
+}
+
+export interface FeatureCardProps {
+    icon: string;
+    title: string;
+    description: string;
+    colorClass: string;
+    iconColorClass: string;
 }

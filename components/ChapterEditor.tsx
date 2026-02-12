@@ -3,7 +3,9 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Project, Chapter, ChapterStatus, GlossaryTerm } from '../types';
 import { dataService } from '../services/dataService';
 import { translateChapter } from '../services/geminiService';
+import { fetchChapterContent } from '../services/crawler'; // Import hàm fetch content mới
 import { ruleBasedTokenize, ruleBasedTranslate, Token } from '../services/ruleBasedService';
+import QTranslateSettings from './QTranslateSettings';
 
 interface ChapterEditorProps {
   project: Project;
@@ -23,12 +25,24 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
   const [editorMode, setEditorMode] = useState<EditorMode>('PARALLEL');
   const [saving, setSaving] = useState(false);
   const [isTranslatingChapter, setIsTranslatingChapter] = useState(false);
+  const [isLoadingContent, setIsLoadingContent] = useState(false); // New state for loading raw content
+  const [isQTSettingsOpen, setIsQTSettingsOpen] = useState(false);
   
   // Filter & Multi-select States
   const [chapterFilter, setChapterFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<ChapterStatus | 'all'>('all');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+
+  // Added toggleSelect for multi-select functionality
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   // QTranslate Selection State
   const [qtSelection, setQtSelection] = useState<{
@@ -70,6 +84,26 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
     load();
   }, [project.id]);
 
+  // AUTO-FETCH CONTENT IF IT'S A URL
+  useEffect(() => {
+    const checkAndFetchContent = async () => {
+        if (!activeChapter || !activeChapter.contentRaw) return;
+        
+        // Nếu contentRaw là URL (bắt đầu bằng http) và chưa có nội dung (độ dài ngắn)
+        // Lưu ý: Logic này giả định URL luôn ngắn < 500 ký tự.
+        if (activeChapter.contentRaw.startsWith('http') && activeChapter.contentRaw.length < 500) {
+            setIsLoadingContent(true);
+            const fetchedText = await fetchChapterContent(activeChapter.contentRaw);
+            
+            // Cập nhật contentRaw mới (là text thật)
+            handleUpdateContent({ contentRaw: fetchedText }, activeChapter.id);
+            setIsLoadingContent(false);
+        }
+    };
+    
+    checkAndFetchContent();
+  }, [activeChapterId]); // Chạy mỗi khi đổi chương
+
   const handleUpdateContent = useCallback((updates: Partial<Chapter>, chapterId?: string) => {
       const targetId = chapterId || activeChapterId;
       if (!targetId) return;
@@ -85,6 +119,10 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
       setTimeout(() => setSaving(false), 500);
   }, [activeChapterId, project.id]);
 
+  const handleUpdateProjectSettings = (updates: Partial<Project>) => {
+      onUpdateProject({ ...project, ...updates });
+  };
+
   // --- ACTIONS ---
 
   const handleRuleTranslate = (chapter: Chapter) => {
@@ -96,35 +134,6 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
     if (activeChapter) {
         handleRuleTranslate(activeChapter);
     }
-  };
-
-  const handleBatchRuleTranslate = () => {
-      if (selectedIds.size === 0) return;
-      chapters.forEach(c => {
-          if (selectedIds.has(c.id)) handleRuleTranslate(c);
-      });
-      setSelectedIds(new Set());
-      setIsMultiSelectMode(false);
-  };
-
-  const handleBatchStatusUpdate = (status: ChapterStatus) => {
-      selectedIds.forEach(id => handleUpdateContent({ status }, id));
-      setSelectedIds(new Set());
-      setIsMultiSelectMode(false);
-  };
-
-  const toggleSelect = (id: string) => {
-      const next = new Set(selectedIds);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      setSelectedIds(next);
-  };
-
-  const handleScanConsistency = () => {
-      if (!activeChapter) return;
-      const result = ruleBasedTranslate(activeChapter.contentRaw, glossaryTerms);
-      handleUpdateContent({ contentTranslated: result });
-      alert("Đã quét và cập nhật nhất quán theo từ điển!");
   };
 
   const handleRawSelect = () => {
@@ -147,7 +156,6 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
       handleUpdateContent({ contentTranslated: newVal });
       setQtSelection(null);
       
-      // Restore cursor and focus
       setTimeout(() => {
           if (translatedTextareaRef.current) {
               translatedTextareaRef.current.focus();
@@ -157,7 +165,6 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
       }, 0);
   };
 
-  // --- SCROLL SYNC ---
   const handleScroll = (source: 'raw' | 'translated') => {
       if (isScrolling.current && isScrolling.current !== source) return;
       isScrolling.current = source;
@@ -166,8 +173,6 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
       const targetEl = source === 'raw' ? translatedTextareaRef.current : rawTextareaRef.current;
       
       if (srcEl && targetEl) {
-          // Calculate percentage to handle different heights if fonts/content differ significantly
-          // For now, direct scrollTop sync is often sufficient for parallel views
           const percentage = srcEl.scrollTop / (srcEl.scrollHeight - srcEl.clientHeight);
           const targetScrollTop = percentage * (targetEl.scrollHeight - targetEl.clientHeight);
           targetEl.scrollTop = targetScrollTop;
@@ -201,6 +206,16 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
                         <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-white/20 !text-sm">search</span>
                         <input className="w-full bg-black/40 border border-white/5 rounded-lg py-2 pl-9 pr-3 text-xs text-white focus:outline-none focus:border-primary/50" placeholder="Tìm chương..." value={chapterFilter} onChange={e => setChapterFilter(e.target.value)} />
                     </div>
+                    <button 
+                        onClick={() => setIsQTSettingsOpen(true)}
+                        className="w-full h-10 bg-[#130e20] border border-white/10 rounded-lg flex items-center justify-between px-3 text-xs font-bold text-gray-400 hover:text-white transition-colors"
+                    >
+                        <div className="flex items-center gap-2">
+                            <span className="material-symbols-outlined !text-sm">dictionary</span>
+                            QT SETTINGS
+                        </div>
+                        <span className="material-symbols-outlined !text-sm">chevron_right</span>
+                    </button>
                 </div>
             </div>
 
@@ -241,10 +256,10 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
                             <span className="text-[10px] text-white/20 font-mono">#{activeChapter?.index}</span>
                         </div>
                         {saving && <span className="text-[9px] font-bold text-success animate-pulse uppercase">Auto-saving...</span>}
+                        {isLoadingContent && <span className="text-[9px] font-bold text-warning animate-pulse uppercase flex items-center gap-1"><span className="material-symbols-outlined !text-[10px] animate-spin">download</span> Fetching Content...</span>}
                     </div>
                 </div>
                 
-                {/* View Mode Switcher */}
                 <div className="hidden md:flex bg-black/20 p-1 rounded-lg">
                     {[
                         { id: 'RAW', icon: 'description', label: 'GỐC' },
@@ -263,12 +278,6 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
                 </div>
 
                 <div className="flex items-center gap-2">
-                    <button 
-                        onClick={handleScanConsistency}
-                        className="h-9 px-4 rounded-lg border border-white/10 text-white/60 text-[10px] font-bold flex items-center gap-2 hover:bg-white/5 transition-all"
-                    >
-                        <span className="material-symbols-outlined !text-sm">analytics</span> QUÉT NHẤT QUÁN
-                    </button>
                     <button 
                         onClick={handleRuleTranslateFullChapter}
                         className="h-9 px-4 rounded-lg bg-warning/10 border border-warning/30 text-warning text-[10px] font-bold flex items-center gap-2 hover:bg-warning hover:text-black transition-all"
@@ -296,14 +305,23 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
                 <div className={`flex flex-col h-full p-8 overflow-hidden bg-bg-main relative ${editorMode === 'TRANSLATE' ? 'hidden' : ''}`}>
                     <textarea 
                         ref={rawTextareaRef}
-                        className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-white/40 font-mono text-base leading-relaxed p-0 custom-scrollbar selection:bg-primary/30 overflow-y-auto"
-                        placeholder="Dán nội dung gốc..."
+                        className={`flex-1 bg-transparent border-none resize-none focus:ring-0 text-white/40 font-mono text-base leading-relaxed p-0 custom-scrollbar selection:bg-primary/30 overflow-y-auto ${isLoadingContent ? 'opacity-50' : ''}`}
+                        placeholder="Dán nội dung gốc hoặc chờ tải tự động..."
                         value={activeChapter?.contentRaw || ""}
                         onMouseUp={handleRawSelect}
                         onKeyUp={handleRawSelect}
                         onScroll={() => handleScroll('raw')}
                         onChange={e => handleUpdateContent({ contentRaw: e.target.value })}
+                        disabled={isLoadingContent}
                     />
+                    {isLoadingContent && (
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div className="bg-black/80 backdrop-blur rounded-lg p-4 flex flex-col items-center">
+                                <span className="material-symbols-outlined animate-spin text-primary text-3xl mb-2">downloading</span>
+                                <span className="text-xs font-bold text-white">Đang tải nội dung từ nguồn...</span>
+                            </div>
+                        </div>
+                    )}
                 </div>
                 <div className={`flex flex-col h-full p-8 overflow-hidden bg-bg-panel/30 relative ${editorMode === 'RAW' ? 'hidden' : ''}`}>
                     <textarea 
@@ -317,16 +335,14 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
                 </div>
             </div>
 
-            {/* QTRANSLATE QUICK OVERLAY NÂNG CẤP DỮ LIỆU */}
+            {/* QUICK QT LOOKUP OVERLAY */}
             {qtSelection && (
                 <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-5xl bg-bg-panel border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-50 animate-in slide-in-from-bottom-2">
                     <div className="px-6 py-3 bg-black/40 border-b border-white/5 flex justify-between items-center">
                         <span className="text-[10px] font-bold uppercase text-warning tracking-widest flex items-center gap-2">
                              <span className="material-symbols-outlined !text-sm">translate</span> QUICK RULE LOOKUP
                         </span>
-                        <div className="flex gap-2">
-                            <button onClick={() => setQtSelection(null)} className="text-white/20 hover:text-white p-1"><span className="material-symbols-outlined !text-sm">close</span></button>
-                        </div>
+                        <button onClick={() => setQtSelection(null)} className="text-white/20 hover:text-white p-1"><span className="material-symbols-outlined !text-sm">close</span></button>
                     </div>
                     <div className="p-4 flex gap-4">
                         <div className="flex-[3] flex flex-wrap gap-2 leading-[2.5] bg-black/20 p-4 rounded-xl border border-white/5 max-h-64 overflow-y-auto custom-scrollbar">
@@ -342,25 +358,6 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
                                     >
                                         {token.translated}
                                     </button>
-                                    
-                                    {/* Tooltip hiển thị Thiều Chửu & Lạc Việt */}
-                                    {(token.thieuChuu || token.lacViet) && (
-                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-3 bg-bg-main border border-white/10 rounded-xl shadow-2xl opacity-0 group-hover/token:opacity-100 pointer-events-none transition-opacity z-[60]">
-                                            <div className="text-[10px] font-bold text-primary uppercase mb-2">Tra cứu sâu: {token.original}</div>
-                                            {token.thieuChuu && (
-                                                <div className="mb-2">
-                                                    <div className="text-[8px] font-black text-warning uppercase">Thiều Chửu:</div>
-                                                    <div className="text-[10px] text-white/70 line-clamp-3 leading-relaxed">{token.thieuChuu}</div>
-                                                </div>
-                                            )}
-                                            {token.lacViet && (
-                                                <div>
-                                                    <div className="text-[8px] font-black text-accent uppercase">Lạc Việt:</div>
-                                                    <div className="text-[10px] text-white/70 line-clamp-3 leading-relaxed">{token.lacViet}</div>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
                                 </div>
                             ))}
                         </div>
@@ -368,6 +365,13 @@ const ChapterEditor: React.FC<ChapterEditorProps> = ({ project, onBack, onUpdate
                 </div>
             )}
         </main>
+
+        <QTranslateSettings 
+            isOpen={isQTSettingsOpen} 
+            onClose={() => setIsQTSettingsOpen(false)}
+            project={project}
+            onUpdateProject={handleUpdateProjectSettings}
+        />
     </div>
   );
 };

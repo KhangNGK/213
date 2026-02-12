@@ -1,8 +1,9 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Project, Chapter } from '../types';
+import { Project, Chapter, ChapterStatus } from '../types';
 import { dataService } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
+import { fetchAndParseNovel } from '../services/crawler';
 
 interface WorkspaceProps {
   onOpenProject: (project: Project) => void;
@@ -21,6 +22,11 @@ const Workspace: React.FC<WorkspaceProps> = ({ onOpenProject, onCreateProject, o
   const [cloudError, setCloudError] = useState<string | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   
+  // Create Modal State
+  const [createTab, setCreateTab] = useState<'MANUAL' | 'CRAWL'>('MANUAL');
+  const [crawlUrl, setCrawlUrl] = useState('');
+  const [isCrawling, setIsCrawling] = useState(false);
+
   // Sync States
   const [pushingId, setPushingId] = useState<string | null>(null);
   const [pullingId, setPullingId] = useState<string | null>(null);
@@ -173,7 +179,10 @@ const Workspace: React.FC<WorkspaceProps> = ({ onOpenProject, onCreateProject, o
             ...newProjectData as any,
             stats: { totalChapters: 0, translatedChapters: 0, glossaryTerms: 0, characters: 0, completionPercent: 0 },
             syncStatus: 'local',
-            settings: { allowPublicView: false, allowComments: false, requireApproval: false, allowEpubExport: false, allowContribution: false, showOnBulletin: false },
+            settings: { 
+                allowPublicView: false, allowComments: false, requireApproval: false, allowEpubExport: true, allowContribution: false, showOnBulletin: false,
+                autoNameAnalysis: false, analysisTool: 'LAC', translationTool: 'QT' 
+            },
             updatedAt: new Date().toISOString()
           };
           onCreateProject(newProject);
@@ -186,6 +195,99 @@ const Workspace: React.FC<WorkspaceProps> = ({ onOpenProject, onCreateProject, o
           }
       }
       setIsCreateModalOpen(false);
+  };
+
+  const handleCrawlCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!crawlUrl) return;
+    setIsCrawling(true);
+
+    try {
+        // SỬ DỤNG PARSER MỚI (NHANH HƠN AI)
+        const result = await fetchAndParseNovel(crawlUrl, 'URL');
+        
+        const newProjectData: Partial<Project> = {
+            title: result.project.title,
+            author: result.project.author,
+            genres: result.project.genres,
+            description: result.project.description,
+            coverImage: result.project.coverImage,
+            sourceLang: result.project.sourceLang,
+            targetLang: result.project.targetLang,
+            isPublic: false
+        };
+
+        let createdProject: Project | null = null;
+
+        if (activeTab === 'local') {
+            createdProject = {
+                id: `local-${Date.now()}`,
+                workspaceId: 'ws-default',
+                ...newProjectData as any,
+                stats: { 
+                    totalChapters: result.chapters.length, 
+                    translatedChapters: 0, 
+                    glossaryTerms: 0, 
+                    characters: 0, 
+                    completionPercent: 0 
+                },
+                syncStatus: 'local',
+                settings: { 
+                    allowPublicView: false, allowComments: false, requireApproval: false, allowEpubExport: true, allowContribution: false, showOnBulletin: false,
+                    autoNameAnalysis: false, analysisTool: 'LAC', translationTool: 'QT'
+                },
+                updatedAt: new Date().toISOString()
+            };
+            onCreateProject(createdProject);
+            
+            // Save chapters locally
+            const chapters: Chapter[] = result.chapters.map((c, i) => ({
+                id: `local-ch-${Date.now()}-${i}`,
+                projectId: createdProject!.id,
+                index: c.index || (i + 1),
+                titleOriginal: c.titleOriginal || `Chương ${i+1}`,
+                titleTranslated: c.titleTranslated || `Chương ${i+1}`, 
+                contentRaw: c.contentRaw || "", // URL is stored here if needed
+                contentTranslated: "",
+                status: 'raw',
+                isDirty: true,
+                version: 1,
+                wordCount: 0,
+                updatedAt: new Date().toISOString()
+            }));
+            localStorage.setItem(`chapters-${createdProject.id}`, JSON.stringify(chapters));
+
+        } else {
+            // Cloud creation
+            const projRes = await dataService.createProject(newProjectData);
+            if (projRes.error) throw new Error(projRes.error);
+            createdProject = projRes.data;
+            
+            if (createdProject) {
+                setCloudProjects(prev => [createdProject!, ...prev]);
+                
+                if (result.chapters.length > 0) {
+                     const chaptersData = result.chapters.map((c, i) => ({
+                        index: c.index || (i + 1),
+                        titleOriginal: c.titleOriginal,
+                        titleTranslated: c.titleTranslated,
+                        status: 'raw' as ChapterStatus,
+                        content_raw: c.contentRaw
+                    }));
+                    await dataService.createChaptersBatch(createdProject.id, chaptersData);
+                }
+            }
+        }
+        
+        setIsCreateModalOpen(false);
+        setCrawlUrl('');
+        alert(`Đã tạo dự án "${result.project.title}" thành công với ${result.chapters.length} chương!`);
+
+    } catch (e: any) {
+        alert(`Lỗi khi tạo dự án từ URL: ${e.message}`);
+    } finally {
+        setIsCrawling(false);
+    }
   };
 
   return (
@@ -208,278 +310,225 @@ const Workspace: React.FC<WorkspaceProps> = ({ onOpenProject, onCreateProject, o
                  </button>
 
                  <div className="relative flex-1 md:w-64">
-                    <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-lg">search</span>
-                    <input 
-                        type="text" 
-                        placeholder="Filter projects..." 
-                        value={filter}
-                        onChange={(e) => setFilter(e.target.value)}
-                        className="w-full bg-bg-panel border border-white/10 rounded-lg py-2 pl-10 pr-4 text-sm text-white focus:outline-none focus:border-primary/50 transition-colors placeholder:text-white/20"
-                    />
-                </div>
+                        <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-lg">search</span>
+                        <input 
+                            type="text" 
+                            placeholder="Filter projects..." 
+                            value={filter}
+                            onChange={(e) => setFilter(e.target.value)}
+                            className="w-full bg-white/5 border border-white/10 rounded-lg py-2 pl-9 pr-3 text-sm text-white focus:outline-none focus:border-primary/50" 
+                        />
+                 </div>
+                 
+                 <button 
+                    onClick={() => setIsCreateModalOpen(true)}
+                    className="flex items-center gap-2 px-6 py-2 bg-primary text-white rounded-lg text-sm font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all"
+                 >
+                     <span className="material-symbols-outlined !text-xl">add</span>
+                     New Project
+                 </button>
             </div>
         </div>
 
-        <div className="flex gap-6 border-b border-white/5">
+        {/* Tabs */}
+        <div className="flex border-b border-white/10 mb-8">
             <button 
                 onClick={() => setActiveTab('local')}
-                className={`pb-3 px-1 text-sm font-bold border-b-2 transition-colors ${activeTab === 'local' ? 'border-primary text-white' : 'border-transparent text-text-muted hover:text-white'}`}
+                className={`px-6 py-3 text-sm font-bold border-b-2 transition-colors flex items-center gap-2 ${activeTab === 'local' ? 'border-primary text-white' : 'border-transparent text-text-muted hover:text-white'}`}
             >
-                Local Storage ({existingProjects?.length || 0})
+                <span className="material-symbols-outlined !text-lg">computer</span>
+                Local Storage
             </button>
             <button 
-                onClick={() => setActiveTab('cloud')}
-                className={`pb-3 px-1 text-sm font-bold border-b-2 transition-colors ${activeTab === 'cloud' ? 'border-primary text-white' : 'border-transparent text-text-muted hover:text-white'}`}
+                onClick={() => { setActiveTab('cloud'); refreshCloudProjects(); }}
+                className={`px-6 py-3 text-sm font-bold border-b-2 transition-colors flex items-center gap-2 ${activeTab === 'cloud' ? 'border-primary text-white' : 'border-transparent text-text-muted hover:text-white'}`}
             >
-                Supabase Cloud ({cloudProjects?.length || 0})
+                <span className="material-symbols-outlined !text-lg">cloud</span>
+                Supabase Cloud
             </button>
         </div>
 
-        {cloudError && activeTab === 'cloud' && (
-            (cloudError.includes('Could not find the table') || cloudError.includes('relation "public.projects" does not exist')) ? (
-                 <div className="p-6 rounded-2xl bg-bg-panel border border-warning/20 flex flex-col items-center justify-center text-center gap-4">
-                    <div className="size-12 rounded-full bg-warning/10 flex items-center justify-center text-warning mb-2">
-                        <span className="material-symbols-outlined !text-3xl">database</span>
-                    </div>
-                    <div>
-                        <h3 className="text-lg font-bold text-white">Database Not Initialized</h3>
-                        <p className="text-text-muted text-sm mt-1 max-w-lg">
-                            The `projects` table is missing. Please initialize your Supabase schema using the SQL provided in the Dashboard or SQL Editor.
-                        </p>
-                    </div>
-                 </div>
-            ) : (
-                <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm font-bold flex items-center gap-2">
-                    <span className="material-symbols-outlined">error</span>
-                    {cloudError}
-                </div>
-            )
-        )}
-
-        {loadingCloud && activeTab === 'cloud' && cloudProjects.length === 0 ? (
-            <div className="py-20 flex justify-center"><span className="material-symbols-outlined animate-spin text-4xl text-primary">sync</span></div>
+        {/* Content Grid */}
+        {activeTab === 'cloud' && loadingCloud ? (
+             <div className="flex justify-center py-20">
+                 <span className="material-symbols-outlined animate-spin text-4xl text-primary">sync</span>
+             </div>
+        ) : displayedProjects.length === 0 ? (
+             <div className="text-center py-20 border border-dashed border-white/10 rounded-2xl bg-white/5">
+                 <span className="material-symbols-outlined !text-4xl text-white/20 mb-4">folder_off</span>
+                 <p className="text-text-muted">No projects found. Create one to get started.</p>
+             </div>
         ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                
-                <button 
-                    onClick={() => setIsCreateModalOpen(true)}
-                    className="flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed border-white/10 hover:border-primary/50 hover:bg-white/5 transition-all p-6 text-text-muted hover:text-white group min-h-[340px]"
-                >
-                    <div className="size-14 rounded-full bg-white/5 flex items-center justify-center group-hover:scale-110 transition-transform border border-white/5 group-hover:border-primary/50">
-                        <span className="material-symbols-outlined text-3xl group-hover:text-primary transition-colors">add</span>
-                    </div>
-                    <span className="font-bold text-sm tracking-wide uppercase">New Project</span>
-                </button>
-
-                {!loadingCloud && !cloudError && displayedProjects.length === 0 && (
-                    <div className="col-span-full py-12 text-center text-text-muted italic">
-                        No projects found in {activeTab} storage.
-                    </div>
-                )}
-
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {displayedProjects.map(project => (
                     <div 
                         key={project.id}
                         onClick={() => onOpenProject(project)}
-                        className="group relative bg-[#1c1230] border border-white/5 rounded-2xl overflow-hidden hover:border-primary/50 transition-all duration-300 hover:-translate-y-1 cursor-pointer flex flex-col min-h-[340px] shadow-lg shadow-black/20"
+                        className="group relative bg-bg-panel border border-white/5 rounded-2xl overflow-hidden hover:border-primary/50 transition-all duration-300 hover:-translate-y-1 cursor-pointer flex flex-col min-h-[280px]"
                     >
-                         <div className="h-44 w-full relative bg-black/40 border-b border-white/5 overflow-hidden">
+                         <div className="h-40 w-full relative bg-black/40 border-b border-white/5 overflow-hidden">
                              {project.coverImage ? (
-                                 <img src={project.coverImage} alt="cover" className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity duration-500 transform group-hover:scale-105" />
+                                 <img src={project.coverImage} alt="cover" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
                              ) : (
-                                 <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-[#2a1b4a] to-black">
-                                    <span className="material-symbols-outlined !text-5xl text-white/10">book_2</span>
+                                 <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-[#1e1e24] to-black">
+                                    <span className="material-symbols-outlined !text-4xl text-white/10">book_2</span>
                                  </div>
                              )}
                              
-                             <div className="absolute top-3 right-3 px-2 py-1 bg-black/60 backdrop-blur-md rounded text-[10px] font-bold text-white border border-white/10 uppercase tracking-wider">
-                                {project.genres[0] || 'Novel'}
-                             </div>
-                             
-                             <div className="absolute top-3 left-3 flex items-center gap-2">
-                                 {activeTab === 'local' && (
+                             {/* Sync Status Badge */}
+                             <div className="absolute top-3 right-3">
+                                {activeTab === 'local' ? (
                                     <button 
                                         onClick={(e) => requestSync(e, 'PUSH', project)}
-                                        disabled={pushingId === project.id}
-                                        className="size-8 rounded-full flex items-center justify-center backdrop-blur-md border bg-black/40 border-white/20 text-white hover:bg-primary hover:border-primary transition-colors z-20 shadow-xl"
+                                        className="size-8 rounded-full bg-black/60 backdrop-blur-md flex items-center justify-center text-white/70 hover:text-accent-blue hover:bg-white transition-all border border-white/10"
                                         title="Push to Cloud"
                                     >
                                         {pushingId === project.id ? (
-                                            <span className="material-symbols-outlined animate-spin !text-base">sync</span>
+                                            <span className="material-symbols-outlined animate-spin !text-lg">sync</span>
                                         ) : (
-                                            <span className="material-symbols-outlined !text-base">cloud_upload</span>
+                                            <span className="material-symbols-outlined !text-lg">cloud_upload</span>
                                         )}
                                     </button>
-                                 )}
-
-                                 {activeTab === 'cloud' && (
+                                ) : (
                                     <button 
                                         onClick={(e) => requestSync(e, 'PULL', project)}
-                                        disabled={pullingId === project.id}
-                                        className="size-8 rounded-full flex items-center justify-center backdrop-blur-md border bg-black/40 border-white/20 text-white hover:bg-accent hover:border-accent transition-colors z-20 shadow-xl"
-                                        title="Download to Local"
+                                        className="size-8 rounded-full bg-black/60 backdrop-blur-md flex items-center justify-center text-white/70 hover:text-success hover:bg-white transition-all border border-white/10"
+                                        title="Pull to Local"
                                     >
                                         {pullingId === project.id ? (
-                                            <span className="material-symbols-outlined animate-spin !text-base">sync</span>
+                                            <span className="material-symbols-outlined animate-spin !text-lg">sync</span>
                                         ) : (
-                                            <span className="material-symbols-outlined !text-base">cloud_download</span>
+                                            <span className="material-symbols-outlined !text-lg">cloud_download</span>
                                         )}
                                     </button>
-                                 )}
-                                 
-                                 <div className={`size-8 rounded-full flex items-center justify-center backdrop-blur-md border ${
-                                     project.syncStatus === 'synced' ? 'bg-success/20 border-success/30 text-success' :
-                                     project.syncStatus === 'dirty' ? 'bg-warning/20 border-warning/30 text-warning' :
-                                     'bg-white/10 border-white/10 text-text-muted'
-                                 }`}>
-                                    <span className="material-symbols-outlined !text-base">
-                                        {project.syncStatus === 'synced' ? 'cloud_done' : 
-                                         project.syncStatus === 'dirty' ? 'sync_problem' : 
-                                         activeTab === 'local' ? 'dns' : 'cloud_off'}
-                                    </span>
-                                 </div>
+                                )}
                              </div>
                          </div>
 
-                         <div className="p-5 flex flex-col flex-1 relative">
-                             <div className="absolute inset-0 bg-gradient-to-t from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"></div>
-
-                             <div className="mb-4 relative z-10">
-                                 <h3 className="font-bold text-lg text-white mb-1 group-hover:text-primary transition-colors line-clamp-1 leading-tight">
-                                     {project.title}
-                                 </h3>
-                                 <p className="text-xs text-text-muted font-medium mb-3">{project.author}</p>
-                                 
-                                 <div className="flex items-center gap-2 text-[10px] text-text-muted uppercase tracking-wider font-bold">
-                                    <span className="bg-white/5 px-2 py-1 rounded border border-white/5">{project.sourceLang}</span>
-                                    <span className="material-symbols-outlined !text-xs text-white/20">arrow_forward</span>
-                                    <span className="bg-white/5 px-2 py-1 rounded border border-white/5">{project.targetLang}</span>
-                                 </div>
+                         <div className="p-5 flex flex-col flex-1">
+                             <div className="mb-4">
+                                 <h3 className="font-bold text-lg text-white mb-1 group-hover:text-primary transition-colors line-clamp-1">{project.title}</h3>
+                                 <p className="text-xs text-text-muted font-medium">{project.author}</p>
                              </div>
 
-                             <div className="mt-auto space-y-3 relative z-10">
-                                <div className="space-y-1.5">
-                                    <div className="flex justify-between text-[10px] font-bold text-text-muted uppercase">
-                                        <span>Completion</span>
-                                        <span className="text-primary">{project.stats.completionPercent}%</span>
-                                    </div>
-                                    <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
-                                        <div className="h-full bg-gradient-to-r from-primary to-accent" style={{ width: `${project.stats.completionPercent}%` }}></div>
-                                    </div>
-                                </div>
-                                
-                                <div className="pt-3 border-t border-white/5 flex justify-between items-center text-[10px] font-bold text-text-muted uppercase tracking-wider">
-                                    <div className="flex items-center gap-1">
-                                        <span className="material-symbols-outlined !text-sm">format_list_numbered</span>
-                                        <span>{project.stats.translatedChapters} / {project.stats.totalChapters} Chaps</span>
-                                    </div>
-                                </div>
+                             <div className="mt-auto flex items-center justify-between text-[10px] font-bold text-text-muted uppercase tracking-wider">
+                                 <div className="flex items-center gap-1">
+                                     <span className="material-symbols-outlined !text-sm">translate</span>
+                                     <span>{project.targetLang}</span>
+                                 </div>
+                                 <div className="flex items-center gap-1">
+                                      <span className="material-symbols-outlined !text-sm">format_list_numbered</span>
+                                      <span>{project.stats.totalChapters} Ch</span>
+                                 </div>
+                             </div>
+                             
+                             <div className="w-full h-1 bg-white/5 rounded-full mt-3 overflow-hidden">
+                                 <div className="h-full bg-primary" style={{ width: `${project.stats.completionPercent}%` }}></div>
                              </div>
                          </div>
                     </div>
                 ))}
             </div>
         )}
+
       </div>
 
-      {confirmAction && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-              <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setConfirmAction(null)}></div>
-              <div className="relative w-full max-w-sm bg-bg-panel border border-white/10 rounded-2xl shadow-2xl p-6 animate-in zoom-in-95">
-                  <div className={`size-12 rounded-full flex items-center justify-center mb-4 ${confirmAction.type === 'PUSH' ? 'bg-primary/10 text-primary' : 'bg-warning/10 text-warning'}`}>
-                      <span className="material-symbols-outlined !text-3xl">
-                          {confirmAction.type === 'PUSH' ? 'cloud_upload' : 'cloud_download'}
-                      </span>
-                  </div>
-                  <h3 className="text-xl font-bold text-white mb-2">
-                      {confirmAction.type === 'PUSH' ? 'Push to Cloud?' : 'Download from Cloud?'}
-                  </h3>
-                  <p className="text-sm text-text-muted mb-6">
-                      {confirmAction.type === 'PUSH' 
-                        ? 'This will overwrite the cloud version with your local data. Existing cloud data may be lost if not synced.' 
-                        : 'This will overwrite your local project with the version from Supabase. Any unsaved local changes will be lost.'}
-                  </p>
-                  <div className="flex gap-3">
-                      <button onClick={() => setConfirmAction(null)} className="flex-1 py-2.5 rounded-xl border border-white/10 text-sm font-bold text-text-muted hover:text-white hover:bg-white/5 transition-colors">
-                          Cancel
+      {/* CREATE MODAL */}
+      {isCreateModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setIsCreateModalOpen(false)}></div>
+              <div className="relative w-full max-w-lg bg-bg-panel border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95">
+                  <div className="flex border-b border-white/5">
+                      <button 
+                        onClick={() => setCreateTab('MANUAL')}
+                        className={`flex-1 py-4 text-sm font-bold uppercase ${createTab === 'MANUAL' ? 'bg-white/5 text-white border-b-2 border-primary' : 'text-text-muted hover:text-white'}`}
+                      >
+                          Manual Create
                       </button>
                       <button 
-                        onClick={confirmAction.type === 'PUSH' ? handlePushToCloud : handlePullFromCloud}
-                        className={`flex-1 py-2.5 rounded-xl text-sm font-bold text-white transition-colors ${confirmAction.type === 'PUSH' ? 'bg-primary hover:bg-primary/90' : 'bg-warning hover:bg-warning/90'}`}
+                        onClick={() => setCreateTab('CRAWL')}
+                        className={`flex-1 py-4 text-sm font-bold uppercase ${createTab === 'CRAWL' ? 'bg-white/5 text-white border-b-2 border-primary' : 'text-text-muted hover:text-white'}`}
                       >
-                          Confirm
+                          Import from URL
                       </button>
+                  </div>
+                  
+                  <div className="p-6">
+                      {createTab === 'MANUAL' ? (
+                          <form onSubmit={handleCreateSubmit} className="space-y-4">
+                              <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-text-muted uppercase">Project Title</label>
+                                  <input name="title" required className="w-full bg-black/40 border border-white/10 rounded-lg p-2.5 text-sm text-white focus:border-primary focus:outline-none" placeholder="My Awesome Novel" />
+                              </div>
+                              <div className="grid grid-cols-2 gap-4">
+                                  <div className="space-y-1">
+                                      <label className="text-[10px] font-bold text-text-muted uppercase">Author</label>
+                                      <input name="author" className="w-full bg-black/40 border border-white/10 rounded-lg p-2.5 text-sm text-white focus:border-primary focus:outline-none" placeholder="Unknown" />
+                                  </div>
+                                  <div className="space-y-1">
+                                      <label className="text-[10px] font-bold text-text-muted uppercase">Genre</label>
+                                      <input name="genre" className="w-full bg-black/40 border border-white/10 rounded-lg p-2.5 text-sm text-white focus:border-primary focus:outline-none" placeholder="Fantasy" />
+                                  </div>
+                              </div>
+                              <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-text-muted uppercase">Description</label>
+                                  <textarea name="description" className="w-full bg-black/40 border border-white/10 rounded-lg p-2.5 text-sm text-white focus:border-primary focus:outline-none h-24 resize-none" placeholder="Synopsis..." />
+                              </div>
+                              <button type="submit" className="w-full py-3 bg-primary text-white font-bold rounded-xl shadow-lg hover:bg-primary/90 mt-2">Create Project</button>
+                          </form>
+                      ) : (
+                          <div className="space-y-4">
+                              <div className="bg-accent/10 p-4 rounded-xl border border-accent/20 flex gap-3 items-start">
+                                  <span className="material-symbols-outlined text-accent">auto_fix</span>
+                                  <p className="text-xs text-white/80">Paste a link from a supported novel site (e.g. metruyenchu). Our AI will parse chapters and metadata automatically.</p>
+                              </div>
+                              <input 
+                                value={crawlUrl}
+                                onChange={e => setCrawlUrl(e.target.value)}
+                                className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-sm text-white focus:border-accent focus:outline-none" 
+                                placeholder="https://..." 
+                              />
+                              <button 
+                                onClick={handleCrawlCreate}
+                                disabled={isCrawling || !crawlUrl}
+                                className="w-full py-3 bg-accent text-white font-bold rounded-xl shadow-lg hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                              >
+                                  {isCrawling ? <><span className="material-symbols-outlined animate-spin">sync</span> Analyzing...</> : 'Import & Create'}
+                              </button>
+                          </div>
+                      )}
                   </div>
               </div>
           </div>
       )}
 
-      {isCreateModalOpen && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-              <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setIsCreateModalOpen(false)}></div>
-              <form onSubmit={handleCreateSubmit} className="relative w-full max-w-md bg-bg-panel border border-white/10 rounded-2xl shadow-2xl p-8 animate-in zoom-in-95 max-h-[90vh] overflow-y-auto custom-scrollbar">
-                  <div className="flex justify-between items-center mb-6">
-                    <h2 className="text-xl font-bold text-white">Create New {activeTab === 'local' ? 'Local' : 'Cloud'} Project</h2>
-                    <button type="button" onClick={() => setIsCreateModalOpen(false)} className="text-text-muted hover:text-white transition-colors">
-                        <span className="material-symbols-outlined">close</span>
-                    </button>
+      {/* CONFIRM SYNC MODAL */}
+      {confirmAction && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setConfirmAction(null)}></div>
+              <div className="relative w-full max-w-sm bg-bg-panel border border-white/10 rounded-2xl p-6 shadow-2xl animate-in zoom-in-95 text-center">
+                  <div className="size-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4 text-primary">
+                      <span className="material-symbols-outlined !text-3xl">
+                          {confirmAction.type === 'PUSH' ? 'cloud_upload' : 'cloud_download'}
+                      </span>
                   </div>
-                  
-                  <div className="space-y-5">
-                      <div className="space-y-1">
-                          <label className="text-xs font-bold text-text-muted uppercase tracking-wider">Project Title</label>
-                          <input name="title" required className="w-full bg-bg-main border border-white/10 rounded-xl p-3 text-white focus:border-primary focus:outline-none transition-colors" placeholder="e.g. The Beginning After The End" />
-                      </div>
-                      <div className="space-y-1">
-                          <label className="text-xs font-bold text-text-muted uppercase tracking-wider">Author</label>
-                          <input name="author" className="w-full bg-bg-main border border-white/10 rounded-xl p-3 text-white focus:border-primary focus:outline-none transition-colors" placeholder="Author Name" />
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-4">
-                          <div className="space-y-1">
-                              <label className="text-xs font-bold text-text-muted uppercase tracking-wider">Source Lang</label>
-                              <select name="sourceLang" defaultValue="Chinese" className="w-full bg-bg-main border border-white/10 rounded-xl p-3 text-white focus:border-primary focus:outline-none transition-colors appearance-none">
-                                    <option value="Chinese">Chinese</option>
-                                    <option value="Korean">Korean</option>
-                                    <option value="Japanese">Japanese</option>
-                                    <option value="English">English</option>
-                              </select>
-                          </div>
-                          <div className="space-y-1">
-                              <label className="text-xs font-bold text-text-muted uppercase tracking-wider">Target Lang</label>
-                              <select name="targetLang" defaultValue="Vietnamese" className="w-full bg-bg-main border border-white/10 rounded-xl p-3 text-white focus:border-primary focus:outline-none transition-colors appearance-none">
-                                    <option value="Vietnamese">Vietnamese</option>
-                                    <option value="English">English</option>
-                                    <option value="Spanish">Spanish</option>
-                                    <option value="Indonesian">Indonesian</option>
-                              </select>
-                          </div>
-                      </div>
-
-                      <div className="space-y-1">
-                          <label className="text-xs font-bold text-text-muted uppercase tracking-wider">Primary Genre</label>
-                          <select name="genre" className="w-full bg-bg-main border border-white/10 rounded-xl p-3 text-white focus:border-primary focus:outline-none transition-colors appearance-none">
-                                <option value="Fantasy">Fantasy</option>
-                                <option value="Action">Action</option>
-                                <option value="Romance">Romance</option>
-                                <option value="System">System</option>
-                                <option value="Cultivation">Cultivation</option>
-                                <option value="Sci-fi">Sci-fi</option>
-                                <option value="Wuxia">Wuxia</option>
-                                <option value="Isekai">Isekai</option>
-                          </select>
-                      </div>
-                      <div className="space-y-1">
-                          <label className="text-xs font-bold text-text-muted uppercase tracking-wider">Description</label>
-                          <textarea name="description" className="w-full bg-bg-main border border-white/10 rounded-xl p-3 text-white focus:border-primary focus:outline-none transition-colors h-24 resize-none custom-scrollbar" placeholder="Short description..." />
-                      </div>
+                  <h3 className="text-lg font-bold text-white mb-2">Confirm {confirmAction.type === 'PUSH' ? 'Upload' : 'Download'}</h3>
+                  <p className="text-sm text-text-muted mb-6">
+                      {confirmAction.type === 'PUSH' 
+                        ? `Overwrite cloud data for "${confirmAction.project.title}" with your local version?`
+                        : `Overwrite local data for "${confirmAction.project.title}" with the cloud version?`
+                      }
+                  </p>
+                  <div className="flex gap-3">
+                      <button onClick={() => setConfirmAction(null)} className="flex-1 py-2 bg-white/5 hover:bg-white/10 text-white font-bold rounded-lg transition-colors">Cancel</button>
+                      <button 
+                        onClick={() => confirmAction.type === 'PUSH' ? handlePushToCloud() : handlePullFromCloud()} 
+                        className="flex-1 py-2 bg-primary hover:bg-primary/90 text-white font-bold rounded-lg transition-colors"
+                      >
+                          Confirm
+                      </button>
                   </div>
-
-                  <div className="flex justify-end gap-3 mt-8 pt-6 border-t border-white/10">
-                      <button type="button" onClick={() => setIsCreateModalOpen(false)} className="px-5 py-2.5 text-sm font-bold text-text-muted hover:text-white transition-colors">Cancel</button>
-                      <button type="submit" className="px-6 py-2.5 bg-primary rounded-xl text-sm font-bold text-white hover:bg-primary/90 shadow-lg shadow-primary/20 transition-transform active:scale-95">Create Project</button>
-                  </div>
-              </form>
+              </div>
           </div>
       )}
     </div>

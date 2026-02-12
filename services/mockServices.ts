@@ -1,3 +1,4 @@
+
 import { Project, SyncStatus, AuditLog, PlanType } from '../types';
 
 // --- WORKFLOW ENGINE SIMULATION ---
@@ -83,13 +84,17 @@ export const syncService = {
                 characters: 12,
                 completionPercent: 0
             },
+            // Added missing settings fields to satisfy the Project interface
             settings: {
                 allowPublicView: true,
                 allowComments: true,
                 requireApproval: false,
                 allowEpubExport: true,
                 allowContribution: false,
-                showOnBulletin: false
+                showOnBulletin: false,
+                autoNameAnalysis: false,
+                analysisTool: 'LAC',
+                translationTool: 'QT'
             },
             updatedAt: new Date().toISOString()
         }

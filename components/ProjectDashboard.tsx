@@ -3,6 +3,9 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Project, Chapter, ProjectStats, GlossaryTerm, ChapterStatus } from '../types';
 import { dataService } from '../services/dataService';
 import { loadExternalDictionary } from '../services/ruleBasedService';
+import { extractNovelMetadata } from '../services/geminiService';
+import { fetchAndParseNovel } from '../services/crawler';
+import { downloadEpub, downloadTxt } from '../utils/exportUtils';
 
 interface ProjectDashboardProps {
   project: Project;
@@ -567,31 +570,185 @@ const GlossaryTab: React.FC<{
     );
 };
 
-// 5. IMPORT/EXPORT TAB (Dictionary/QTranslate)
+// 5. IMPORT/EXPORT TAB (Dictionary/QTranslate + Scrape + Download)
 const ImportExportTab: React.FC<{
     project: Project;
     chapters: Chapter[];
     onUpdateChapters: (chapters: Chapter[]) => void;
-}> = ({ project, chapters }) => {
+    onUpdateProjectPartial: (p: Partial<Project>) => void;
+}> = ({ project, chapters, onUpdateProjectPartial, onUpdateChapters }) => {
+    
+    // --- Scrape State ---
+    const [rawSource, setRawSource] = useState("");
+    const [crawlUrl, setCrawlUrl] = useState("");
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+
     const handleDictUpload = (e: React.ChangeEvent<HTMLInputElement>, type: any) => {
         const file = e.target.files?.[0];
         if (!file) return;
         const reader = new FileReader();
         reader.onload = (event) => {
             const content = event.target?.result as string;
-            // PASS TRUE TO PERSIST TO LOCAL STORAGE
             loadExternalDictionary(content, type, true);
             alert(`Đã nạp từ điển ${type} vào bộ lõi QTranslate và lưu vào bộ nhớ trình duyệt!`);
         };
         reader.readAsText(file);
     };
 
+    const handleManualAnalyze = async () => {
+        if (!rawSource.trim()) return;
+        setIsAnalyzing(true);
+        try {
+            const extracted = await extractNovelMetadata(rawSource);
+            onUpdateProjectPartial({
+                title: extracted.title || project.title,
+                author: extracted.author || project.author,
+                description: extracted.description || project.description,
+                genres: extracted.genres.length > 0 ? extracted.genres : project.genres,
+                coverImage: extracted.coverImage || project.coverImage,
+                sourceLang: extracted.sourceLang || project.sourceLang
+            });
+            alert("Đã phân tích và cập nhật thông tin thành công!");
+            setRawSource("");
+        } catch (e) {
+            alert("Lỗi phân tích: " + (e as Error).message);
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
+
+    const handleUrlCrawl = async () => {
+        if (!crawlUrl.trim()) return;
+        setIsAnalyzing(true);
+        try {
+            const result = await fetchAndParseNovel(crawlUrl, 'URL');
+            
+            // 1. Update Metadata
+            onUpdateProjectPartial({
+                title: result.project.title || project.title,
+                author: result.project.author || project.author,
+                description: result.project.description || project.description,
+                genres: (result.project.genres && result.project.genres.length > 0) ? result.project.genres : project.genres,
+                coverImage: result.project.coverImage || project.coverImage,
+                sourceLang: result.project.sourceLang || project.sourceLang,
+                targetLang: result.project.targetLang || project.targetLang
+            });
+
+            // 2. Create Chapters
+            if (result.chapters.length > 0) {
+                const newChapters: Chapter[] = result.chapters.map((c, i) => ({
+                    id: isLocalId(project.id) ? `local-ch-${Date.now()}-${i}` : `temp-${i}`, // Local temporary ID, real ID assigned by DB if pushed
+                    projectId: project.id,
+                    index: c.index || (i + 1),
+                    titleOriginal: c.titleOriginal || '',
+                    titleTranslated: c.titleTranslated || '',
+                    contentRaw: c.contentRaw || "", // Chưa có nội dung, người dùng sẽ dịch sau
+                    contentTranslated: "",
+                    status: 'raw',
+                    isDirty: true,
+                    version: 1,
+                    wordCount: 0,
+                    updatedAt: new Date().toISOString()
+                }));
+                
+                // Merge with existing chapters (avoid duplicates by index)
+                const merged = [...chapters];
+                newChapters.forEach(nc => {
+                    const exists = merged.find(ex => ex.index === nc.index);
+                    if (!exists) merged.push(nc);
+                    else {
+                        exists.titleTranslated = nc.titleTranslated;
+                        exists.titleOriginal = nc.titleOriginal;
+                    }
+                });
+                
+                if (!isLocalId(project.id)) {
+                    // Sync to DB if Cloud Project
+                    await dataService.createChaptersBatch(project.id, newChapters);
+                    const refreshed = await dataService.fetchChapters(project.id);
+                    if (refreshed.data) onUpdateChapters(refreshed.data);
+                } else {
+                    onUpdateChapters(merged);
+                }
+
+                alert(`Đã thu thập thông tin và ${newChapters.length} chương truyện!`);
+            } else {
+                alert("Đã cập nhật thông tin truyện (không tìm thấy danh sách chương).");
+            }
+            setCrawlUrl("");
+        } catch (e) {
+            alert("Lỗi thu thập: " + (e as Error).message);
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
+
     return (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-in fade-in">
-             {/* Section 1: QTranslate Dictionaries */}
+             
+             {/* Section 1: Auto Crawl URL (New Feature) */}
+             <div className="bg-bg-panel border border-white/5 rounded-2xl p-6 md:col-span-2">
+                 <div className="flex items-center gap-3 mb-4">
+                     <div className="size-10 rounded-full bg-accent/10 flex items-center justify-center text-accent">
+                        <span className="material-symbols-outlined !text-xl">link</span>
+                     </div>
+                     <div>
+                        <h3 className="text-lg font-bold text-white">Thu Thập Tự Động Từ URL</h3>
+                        <p className="text-sm text-text-muted">Nhập link truyện (VD: metruyenchu, qidian...). AI sẽ tự động lấy thông tin và dịch sang Tiếng Việt.</p>
+                     </div>
+                 </div>
+                 
+                 <div className="flex gap-2">
+                     <input 
+                        value={crawlUrl}
+                        onChange={(e) => setCrawlUrl(e.target.value)}
+                        className="flex-1 bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-accent placeholder:text-white/20"
+                        placeholder="https://metruyenchu.com.vn/truyen/..."
+                     />
+                     <button 
+                        onClick={handleUrlCrawl}
+                        disabled={isAnalyzing || !crawlUrl.trim()}
+                        className="px-6 bg-accent text-white rounded-xl font-bold text-sm shadow-lg shadow-accent/20 hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                     >
+                        {isAnalyzing ? (
+                            <><span className="material-symbols-outlined animate-spin !text-lg">sync</span> Đang xử lý...</>
+                        ) : (
+                            <><span className="material-symbols-outlined !text-lg">cloud_download</span> Thu Thập & Dịch</>
+                        )}
+                     </button>
+                 </div>
+             </div>
+
+             {/* Section 2: Manual Embed Source */}
              <div className="bg-bg-panel border border-white/5 rounded-2xl p-6">
-                 <div className="size-12 rounded-full bg-warning/10 flex items-center justify-center text-warning mb-4">
-                     <span className="material-symbols-outlined !text-2xl">dictionary</span>
+                 <div className="flex items-center gap-3 mb-4">
+                     <div className="size-10 rounded-full bg-white/5 flex items-center justify-center text-white/50">
+                        <span className="material-symbols-outlined !text-xl">code</span>
+                     </div>
+                     <h3 className="text-lg font-bold text-white">Nhúng Mã Nguồn (Thủ Công)</h3>
+                 </div>
+                 
+                 <div className="space-y-4">
+                     <textarea 
+                        value={rawSource}
+                        onChange={(e) => setRawSource(e.target.value)}
+                        className="w-full h-32 bg-black/20 border border-white/10 rounded-xl p-4 text-xs font-mono text-white focus:outline-none focus:border-white/30 custom-scrollbar placeholder:text-white/20"
+                        placeholder="Paste mã nguồn HTML hoặc văn bản thô..."
+                     />
+                     <button 
+                        onClick={handleManualAnalyze}
+                        disabled={isAnalyzing || !rawSource.trim()}
+                        className="w-full py-2 bg-white/10 text-white rounded-xl font-bold text-sm hover:bg-white/20 disabled:opacity-50 flex items-center justify-center gap-2"
+                     >
+                        <span className="material-symbols-outlined !text-lg">auto_fix</span> Phân Tích
+                     </button>
+                 </div>
+             </div>
+
+             {/* Section 3: QTranslate Dictionaries */}
+             <div className="bg-bg-panel border border-white/5 rounded-2xl p-6">
+                 <div className="size-10 rounded-full bg-warning/10 flex items-center justify-center text-warning mb-4">
+                     <span className="material-symbols-outlined !text-xl">dictionary</span>
                  </div>
                  <h3 className="text-lg font-bold text-white mb-2">Thư Viện QTranslate</h3>
                  <p className="text-sm text-text-muted mb-6">Nạp các tệp từ điển để tối ưu hóa bộ lõi dịch thuật rule-based.</p>
@@ -600,10 +757,7 @@ const ImportExportTab: React.FC<{
                     {[
                         { id: 'vietphrase', label: 'VietPhrase.txt' },
                         { id: 'phienam', label: 'PhienAm.txt' },
-                        { id: 'thieuChuu', label: 'ThieuChuu.txt' },
-                        { id: 'lacViet', label: 'LacViet.txt' },
-                        { id: 'luatNhan', label: 'LuatNhan.txt' },
-                        { id: 'ignoredList', label: 'IgnoredList.txt' }
+                        { id: 'names', label: 'Names.txt' }
                     ].map(dict => (
                         <label key={dict.id} className="flex items-center justify-between p-3 bg-black/20 border border-white/10 rounded-xl hover:bg-white/5 cursor-pointer transition-colors group">
                             <span className="text-xs font-bold text-white/60 group-hover:text-white uppercase">{dict.label}</span>
@@ -614,37 +768,27 @@ const ImportExportTab: React.FC<{
                  </div>
              </div>
 
-             {/* Section 2: Standard Import/Export */}
-             <div className="space-y-6">
-                <div className="bg-bg-panel border border-white/5 rounded-2xl p-6">
-                    <div className="size-12 rounded-full bg-primary/10 flex items-center justify-center text-primary mb-4">
-                        <span className="material-symbols-outlined !text-2xl">file_upload</span>
-                    </div>
-                    <h3 className="text-lg font-bold text-white mb-2">Nhập Nội Dung (Chapters)</h3>
-                    <p className="text-sm text-text-muted mb-6">Tải lên file .txt để tạo nhiều chương cùng lúc.</p>
-                    <div className="border-2 border-dashed border-white/10 rounded-xl p-8 flex flex-col items-center justify-center text-center hover:bg-white/5 transition-colors cursor-pointer group">
-                        <span className="material-symbols-outlined !text-3xl text-white/20 group-hover:text-primary transition-colors mb-2">upload_file</span>
-                        <span className="text-xs font-bold text-white/40 group-hover:text-white uppercase">Kéo thả hoặc Nhấp để tải</span>
-                    </div>
+             {/* Section 4: Export */}
+             <div className="bg-bg-panel border border-white/5 rounded-2xl p-6 md:col-span-2 flex flex-col md:flex-row gap-6 items-center justify-between">
+                <div>
+                    <h3 className="text-lg font-bold text-white mb-1">Xuất Truyện (Export)</h3>
+                    <p className="text-sm text-text-muted">Tải xuống toàn bộ nội dung đã dịch để đọc offline.</p>
                 </div>
+                
+                <div className="flex gap-4 w-full md:w-auto">
+                    <button 
+                        onClick={() => downloadEpub(project, chapters)}
+                        className="flex-1 md:flex-none px-6 py-3 bg-primary/10 border border-primary/20 text-primary rounded-xl font-bold hover:bg-primary hover:text-white transition-all flex items-center justify-center gap-2"
+                    >
+                        <span className="material-symbols-outlined">book</span> EPUB
+                    </button>
 
-                <div className="bg-bg-panel border border-white/5 rounded-2xl p-6">
-                    <div className="size-12 rounded-full bg-accent/10 flex items-center justify-center text-accent mb-4">
-                        <span className="material-symbols-outlined !text-2xl">file_download</span>
-                    </div>
-                    <h3 className="text-lg font-bold text-white mb-2">Xuất Truyện (Export)</h3>
-                    <div className="space-y-3">
-                        <button className="w-full flex items-center justify-between p-4 bg-black/20 border border-white/10 rounded-xl hover:bg-white/5 transition-colors group">
-                            <div className="flex items-center gap-3">
-                                <span className="material-symbols-outlined text-white/60">book</span>
-                                <div className="text-left">
-                                    <div className="text-sm font-bold text-white">EPUB E-Book</div>
-                                    <div className="text-xs text-text-muted">Tối ưu cho Kindle, Apple Books</div>
-                                </div>
-                            </div>
-                            <span className="material-symbols-outlined text-white/20 group-hover:text-white">download</span>
-                        </button>
-                    </div>
+                    <button 
+                        onClick={() => downloadTxt(project, chapters)}
+                        className="flex-1 md:flex-none px-6 py-3 bg-white/5 border border-white/10 text-white rounded-xl font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-2"
+                    >
+                        <span className="material-symbols-outlined">description</span> TXT
+                    </button>
                 </div>
              </div>
         </div>
@@ -784,7 +928,7 @@ const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ project: initialPro
                     onOpenReader={onOpenReader}
                 />
             )}
-            {activeTab === 'IMPORT_EXPORT' && (<ImportExportTab project={project} chapters={chapters} onUpdateChapters={handleUpdateChapters} />)}
+            {activeTab === 'IMPORT_EXPORT' && (<ImportExportTab project={project} chapters={chapters} onUpdateChapters={handleUpdateChapters} onUpdateProjectPartial={handleUpdateProjectPartial} />)}
           </div>
         )}
       </main>

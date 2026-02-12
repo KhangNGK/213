@@ -14,6 +14,16 @@ function decode(base64: string) {
   return bytes;
 }
 
+// Helper to safely get API key without crashing
+const getApiKey = () => {
+    // Check if process is defined (it is polyfilled in index.html, but safety first)
+    if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+        return process.env.API_KEY;
+    }
+    // Fallback or empty string (will cause API error but not app crash)
+    return '';
+};
+
 const cleanJson = (text: string) => {
   if (!text) return "{}";
   let cleaned = text.trim();
@@ -41,7 +51,7 @@ RÀNG BUỘC HỆ THỐNG:
  * Tự động trích xuất quy tắc mới từ ngữ cảnh bản dịch
  */
 export const extractNewRules = async (original: string, translated: string): Promise<Partial<GlossaryTerm>[]> => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
     try {
         const res = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
@@ -66,8 +76,11 @@ export const extractNewRules = async (original: string, translated: string): Pro
     } catch { return []; }
 };
 
+/**
+ * Dịch một đoạn văn bản ngắn
+ */
 export const translateText = async (text: string, lang: string = 'Vietnamese', glossary: GlossaryTerm[] = []) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey: getApiKey() });
   const res = await retryWithBackoff<GenerateContentResponse>(() => ai.models.generateContent({
     model: 'gemini-3-flash-preview',
     contents: `DỊCH ĐOẠN NÀY:\n${text}`,
@@ -76,8 +89,45 @@ export const translateText = async (text: string, lang: string = 'Vietnamese', g
   return res.text?.trim() || "";
 };
 
+/**
+ * Dịch hàng loạt (Batch Translation) - Tối ưu cho danh sách chương
+ */
+export const translateBatch = async (texts: string[]): Promise<string[]> => {
+    if (texts.length === 0) return [];
+    
+    // Gom nhóm để giảm số request (tối đa ~50 dòng mỗi lần gọi)
+    const joinedText = texts.join('\n|||\n'); 
+    
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    try {
+        const res = await retryWithBackoff<GenerateContentResponse>(() => ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: `Dịch danh sách sau sang Tiếng Việt (Kiểu truyện mạng). Giữ nguyên thứ tự. Phân cách các dòng bằng "|||".\n\n${joinedText}`,
+            config: {
+                systemInstruction: "Bạn là trợ lý dịch thuật danh sách chương truyện. Chỉ trả về kết quả dịch, không giải thích."
+            }
+        }));
+        
+        const resultText = res.text || "";
+        const translatedArray = resultText.split('|||').map(t => t.trim());
+        
+        // Fallback nếu số lượng dòng không khớp (hiếm gặp nhưng cần xử lý)
+        if (translatedArray.length !== texts.length) {
+            console.warn("Batch translation length mismatch, slicing to fit.");
+            // Nếu thiếu thì fill bằng text gốc, nếu thừa thì cắt bớt
+            while (translatedArray.length < texts.length) translatedArray.push(texts[translatedArray.length]);
+            return translatedArray.slice(0, texts.length);
+        }
+        
+        return translatedArray;
+    } catch (e) {
+        console.error("Batch translate error:", e);
+        return texts; // Fallback về gốc nếu lỗi
+    }
+};
+
 export const translateChapter = async (chapter: Chapter, project: Project, glossary: GlossaryTerm[]): Promise<{ title: string, content: string }> => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
     
     const res = await retryWithBackoff<GenerateContentResponse>(() => ai.models.generateContent({
         model: 'gemini-3-pro-preview', // Sử dụng model Pro cho chất lượng dịch cao nhất
@@ -109,8 +159,42 @@ export const translateChapter = async (chapter: Chapter, project: Project, gloss
     }
 };
 
+export const extractNovelMetadata = async (rawSource: string): Promise<Partial<Project>> => {
+  const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const textSample = rawSource.length > 20000 ? rawSource.substring(0, 20000) : rawSource;
+  
+  try {
+      const res = await ai.models.generateContent({
+          model: 'gemini-3-flash-preview',
+          contents: `Analyze the following text (which might be HTML source or raw text of a novel) and extract the metadata.
+          
+          TEXT:
+          ${textSample}`,
+          config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                      title: { type: Type.STRING },
+                      author: { type: Type.STRING },
+                      description: { type: Type.STRING },
+                      genres: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      coverImage: { type: Type.STRING },
+                      sourceLang: { type: Type.STRING },
+                  }
+              }
+          }
+      });
+      const cleaned = cleanJson(res.text || "{}");
+      return JSON.parse(cleaned);
+  } catch (error) {
+      console.error("Error extracting metadata:", error);
+      return {};
+  }
+};
+
 export const generateSpeech = async (text: string, voiceName: string = 'Zephyr'): Promise<ArrayBuffer | null> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey: getApiKey() });
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",

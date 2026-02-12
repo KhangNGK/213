@@ -4,7 +4,7 @@ import { GlossaryTerm } from '../types';
 export interface Token {
     original: string;
     translated: string;
-    type: 'glossary' | 'vietphrase' | 'phienam' | 'symbol' | 'fallback';
+    type: 'glossary' | 'vietphrase' | 'phienam' | 'symbol' | 'fallback' | 'name';
     thieuChuu?: string;
     lacViet?: string;
 }
@@ -16,6 +16,7 @@ interface GrammarRule {
 
 // Bộ nhớ đệm cho từ điển
 const DICTIONARIES = {
+    names: new Map<string, string>(), // Added Names dictionary
     vietphrase: new Map<string, string>(),
     phienam: new Map<string, string>(),
     thieuChuu: new Map<string, string>(),
@@ -34,6 +35,7 @@ class TrieNode {
 }
 
 const VIETPHRASE_TRIE = new TrieNode();
+const NAMES_TRIE = new TrieNode(); // Added Trie for Names
 
 const insertTrie = (root: TrieNode, word: string, value: string) => {
     let node = root;
@@ -82,6 +84,7 @@ export const loadExternalDictionary = (content: string, type: keyof typeof DICTI
                 const key = parts[0].trim();
                 const val = parts[1].trim();
                 if (type === 'vietphrase') insertTrie(VIETPHRASE_TRIE, key, val);
+                if (type === 'names') insertTrie(NAMES_TRIE, key, val);
                 (DICTIONARIES[type] as Map<string, string>).set(key, val);
             }
         }
@@ -90,13 +93,50 @@ export const loadExternalDictionary = (content: string, type: keyof typeof DICTI
 
 // Initialize from storage
 if (typeof window !== 'undefined') {
-    ['vietphrase', 'phienam', 'thieuChuu', 'lacViet', 'ignoredList', 'ignoredPhrases', 'luatNhan'].forEach(type => {
+    ['names', 'vietphrase', 'phienam', 'thieuChuu', 'lacViet', 'ignoredList', 'ignoredPhrases', 'luatNhan'].forEach(type => {
         const stored = localStorage.getItem(`dict_${type}`);
         if (stored) {
             loadExternalDictionary(stored, type as any, false);
         }
     });
 }
+
+// --- PUBLIC DICTIONARY MANAGER ---
+export const dictionaryManager = {
+    getEntries: (type: 'names' | 'vietphrase' | 'phienam'): [string, string][] => {
+        if (DICTIONARIES[type] instanceof Map) {
+            return Array.from((DICTIONARIES[type] as Map<string, string>).entries());
+        }
+        return [];
+    },
+    addEntry: (type: 'names' | 'vietphrase' | 'phienam', key: string, value: string) => {
+        const dict = DICTIONARIES[type] as Map<string, string>;
+        dict.set(key, value);
+        
+        if (type === 'vietphrase') insertTrie(VIETPHRASE_TRIE, key, value);
+        if (type === 'names') insertTrie(NAMES_TRIE, key, value);
+
+        // Simple persist
+        if (typeof window !== 'undefined') {
+            const content = Array.from(dict.entries()).map(([k, v]) => `${k}=${v}`).join('\n');
+            localStorage.setItem(`dict_${type}`, content);
+        }
+    },
+    deleteEntry: (type: 'names' | 'vietphrase' | 'phienam', key: string) => {
+         const dict = DICTIONARIES[type] as Map<string, string>;
+         if (dict.has(key)) {
+             dict.delete(key);
+             // Note: Deleting from Trie is complex, requiring rebuild. 
+             // For this app's scale, we rely on the Map for management and tolerate stale Trie entries until reload 
+             // OR we could rebuild trie here if needed.
+             
+             if (typeof window !== 'undefined') {
+                const content = Array.from(dict.entries()).map(([k, v]) => `${k}=${v}`).join('\n');
+                localStorage.setItem(`dict_${type}`, content);
+            }
+         }
+    }
+};
 
 export const ruleBasedTokenize = (text: string, glossary: GlossaryTerm[] = []): Token[] => {
     if (!text) return [];
@@ -109,7 +149,7 @@ export const ruleBasedTokenize = (text: string, glossary: GlossaryTerm[] = []): 
     let i = 0;
 
     while (i < text.length) {
-        // 1. Kiểm tra Glossary
+        // 1. Kiểm tra Glossary (Project Specific)
         const gMatch = findLongestMatch(glossaryTrie, text, i);
         if (gMatch) {
             tokens.push({
@@ -120,7 +160,18 @@ export const ruleBasedTokenize = (text: string, glossary: GlossaryTerm[] = []): 
             i += gMatch.length; continue;
         }
 
-        // 2. Kiểm tra VietPhrase
+        // 2. Kiểm tra Names (Common Names.txt)
+        const nMatch = findLongestMatch(NAMES_TRIE, text, i);
+        if (nMatch) {
+            tokens.push({
+                original: text.substring(i, i + nMatch.length),
+                translated: nMatch.value,
+                type: 'name'
+            });
+            i += nMatch.length; continue;
+        }
+
+        // 3. Kiểm tra VietPhrase
         const vMatch = findLongestMatch(VIETPHRASE_TRIE, text, i);
         if (vMatch) {
             const original = text.substring(i, i + vMatch.length);
@@ -134,14 +185,14 @@ export const ruleBasedTokenize = (text: string, glossary: GlossaryTerm[] = []): 
             i += vMatch.length; continue;
         }
 
-        // 3. Ký tự đặc biệt
+        // 4. Ký tự đặc biệt
         const char = text[i];
         if (/[。，！？“”：；（）\s\n\r\t]/.test(char)) {
             tokens.push({ original: char, translated: char, type: 'symbol' });
             i++; continue;
         }
 
-        // 4. Fallback Hán Việt đơn ký tự
+        // 5. Fallback Hán Việt đơn ký tự
         const phienAm = DICTIONARIES.phienam.get(char) || char;
         tokens.push({
             original: char,
